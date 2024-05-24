@@ -56,7 +56,7 @@ func Resolve(URL string) (string, error) {
 		tt := htmlTokens.Next()
 		if tt == html.ErrorToken { // includes EOF
 			break
-		} else if tt == html.StartTagToken {
+		} else if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
 			t := htmlTokens.Token()
 
 			if t.Data == "base" {
@@ -70,6 +70,7 @@ func Resolve(URL string) (string, error) {
 			} else if t.Data != "link" {
 				continue
 			}
+
 			relAttr := ""
 			hrefAttr := ""
 			typeAttr := ""

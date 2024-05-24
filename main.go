@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"faviconapi/favicon"
+	"fmt"
 	"github.com/allegro/bigcache"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/ratelimit"
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -34,6 +36,11 @@ type Icon struct {
 const MaxDefaultUrlSize = 16384
 
 func main() {
+	if len(os.Args) > 1 {
+		cli()
+		return
+	}
+
 	cache, _ := bigcache.NewBigCache(bigcache.DefaultConfig(time.Hour * 24 * 7 * 365)) // cache for a year-ish
 	rl := ratelimit.New(100)
 
@@ -131,5 +138,16 @@ func main() {
 	err := http.ListenAndServe(":3333", nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("startup failed")
+	}
+}
+
+func cli() {
+	for _, arg := range os.Args[1:] {
+		resolved, err := favicon.Resolve(arg)
+
+		fmt.Println("=== arg")
+		fmt.Printf("   resolved: %s\n", resolved)
+		fmt.Printf("   err: %s\n", err)
+		fmt.Println("===")
 	}
 }
