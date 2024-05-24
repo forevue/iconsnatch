@@ -40,7 +40,15 @@ func DoRequest(method string, URL string, allowDomainChange bool) (*http.Respons
 	} else {
 		u, _ := url.ParseRequestURI(URL)
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if u.Hostname() != req.URL.Hostname() {
+			from := u.Hostname()
+			to := req.URL.Hostname()
+
+			// When we don't want a domain change, we don't mean
+			// from .x.x to www.x.x, because that's still the same
+			// entity. Preventing redirects from other domains is
+			// useful for cases where, e.g., company A acquires B
+			// and redirects B.com to A.com
+			if from != to && (to[4:] != from && to[:4] == "www.") {
 				return ErrRedirectChangedHosts
 			}
 
@@ -63,7 +71,6 @@ func DoRequest(method string, URL string, allowDomainChange bool) (*http.Respons
 }
 
 func Resolve(URL string) (string, error) {
-
 	offset, err := GetFaviconAuthority(URL)
 	if err != nil {
 		return "", errors.New("bad url")
