@@ -2,6 +2,7 @@ package favicon
 
 import (
 	"errors"
+	"fmt"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/html"
 	"net/http"
@@ -147,6 +148,8 @@ func Resolve(URL string) (string, error) {
 		iconHref = strings.TrimRight(res.Request.URL.String(), "/") + "/" + iconToTry
 	}
 
+	fmt.Println(iconHref)
+
 	res, err = DoRequest("GET", iconHref)
 	if err != nil {
 		return "", errors.New("unreachable server")
@@ -181,6 +184,11 @@ func hasValidMimeType(buf [64]byte) bool {
 
 	// jpeg 1?
 	if str[:4] == "\xFF\xD8\xFF\xE1" && str[6:12] == "\x45\x78\x69\x66\x00\x00" {
+		return true
+	}
+
+	// webp
+	if str[:4] == "\x52\x49\x46\x46" && str[8:12] == "\x57\x45\x42\x50" {
 		return true
 	}
 
