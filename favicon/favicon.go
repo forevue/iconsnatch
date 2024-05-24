@@ -17,10 +17,36 @@ type Icon struct {
 	baseURL     string
 }
 
-func Resolve(URL string) (string, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
+var client = &http.Client{
+	Timeout: 5 * time.Second,
+}
+
+func DoRequest(method string, url string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
 	}
+
+	authority, err := GetFaviconAuthority(url)
+	if err != nil {
+		return nil, err // should not happen
+	}
+
+	// should bypass most WAFs
+	req.Header.Add("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+	req.Header.Add("DNT", "1")
+	req.Header.Add("Accept", "image/avif,image/webp,*/*")
+	req.Header.Add("Cache-Control", "no-cache")
+	req.Header.Add("Referer", url[:authority])
+	req.Header.Add("Origin", url[:authority])
+	req.Header.Add("Sec-Fetch-Dest", "image")
+	req.Header.Add("Sec-Fetch-Mode", "no-cors")
+	req.Header.Add("Sec-Fetch-Site", "same-origin")
+
+	return client.Do(req)
+}
+
+func Resolve(URL string) (string, error) {
 
 	offset, err := GetFaviconAuthority(URL)
 	if err != nil {
@@ -32,7 +58,7 @@ func Resolve(URL string) (string, error) {
 		baseURL: URL[:offset],
 	}
 
-	res, err := client.Get(icon.baseURL + "/favicon.ico")
+	res, err := DoRequest("GET", icon.baseURL+"/favicon.ico")
 	if err != nil {
 		return "", errors.New("unreachable server")
 	}
@@ -43,7 +69,7 @@ func Resolve(URL string) (string, error) {
 		return res.Request.URL.String(), nil
 	}
 
-	res, err = http.DefaultClient.Get(icon.RawURL)
+	res, err = DoRequest("GET", icon.RawURL)
 	if err != nil {
 		return "", errors.New("unreachable server")
 	}
@@ -74,7 +100,7 @@ func Resolve(URL string) (string, error) {
 
 			relAttr := ""
 			hrefAttr := ""
-			typeAttr := ""
+			//typeAttr := ""
 
 			for _, attr := range t.Attr {
 				if attr.Key == "rel" {
@@ -87,10 +113,10 @@ func Resolve(URL string) (string, error) {
 					continue
 				}
 
-				if attr.Key == "type" {
-					typeAttr = attr.Val
-					continue
-				}
+				//if attr.Key == "type" {
+				//	typeAttr = attr.Val
+				//	continue
+				//}
 
 			}
 
@@ -98,21 +124,9 @@ func Resolve(URL string) (string, error) {
 				continue
 			}
 
+			// todo: we need to give priority to the last
 			// We take the first non-svg icon that we find.
-			if relAttr == "shortcut icon" {
-				iconToTry = hrefAttr
-
-				if typeAttr != "image/svg+xml" {
-					break
-				}
-			} else {
-				if typeAttr != "image/svg+xml" {
-					iconToTry = hrefAttr
-				}
-
-				iconToTry = hrefAttr
-			}
-
+			iconToTry = hrefAttr
 		}
 	}
 
@@ -133,7 +147,7 @@ func Resolve(URL string) (string, error) {
 		iconHref = strings.TrimRight(res.Request.URL.String(), "/") + "/" + iconToTry
 	}
 
-	res, err = http.DefaultClient.Get(iconHref)
+	res, err = DoRequest("GET", iconHref)
 	if err != nil {
 		return "", errors.New("unreachable server")
 	}
@@ -161,7 +175,12 @@ func hasValidMimeType(buf [64]byte) bool {
 	}
 
 	// jpeg
-	if str[:13] == "\xFF\xD8\xFF\xFF\xE0\x00\x10\x4A\x46\x49\x46\x00\x01" || str[:4] == "\xFF\xD8\xFF\xEE" || str[:4] == "\xFF\xD8\xFF\xE0" {
+	if str[:9] == "\xFF\xD8\xFF\xFF\xE0\x00\x10\x4A\x46" || str[:4] == "\x49\x46\x00\x01" || str[:4] == "\xFF\xD8\xFF\xEE" || str[:4] == "\xFF\xD8\xFF\xE0" {
+		return true
+	}
+
+	// jpeg 1?
+	if str[:4] == "\xFF\xD8\xFF\xE1" && str[6:12] == "\x45\x78\x69\x66\x00\x00" {
 		return true
 	}
 
