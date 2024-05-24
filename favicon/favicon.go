@@ -5,6 +5,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/html"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unsafe"
@@ -126,6 +127,8 @@ func Resolve(URL string) (string, error) {
 		iconHref = baseHref + iconToTry
 	} else if iconToTry[0] == '/' {
 		iconHref = URL[:offset] + iconToTry
+	} else if _, err = url.ParseRequestURI(iconToTry); err == nil {
+		iconHref = iconToTry
 	} else {
 		iconHref = strings.TrimRight(res.Request.URL.String(), "/") + "/" + iconToTry
 	}
