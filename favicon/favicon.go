@@ -2,7 +2,6 @@ package favicon
 
 import (
 	"errors"
-	"fmt"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/html"
 	"net/http"
@@ -22,15 +21,30 @@ var client = &http.Client{
 	Timeout: 5 * time.Second,
 }
 
-func DoRequest(method string, url string) (*http.Response, error) {
-	req, err := http.NewRequest(method, url, nil)
+var ErrRedirectChangedHosts = errors.New("bad redirect")
+
+func DoRequest(method string, URL string, allowDomainChange bool) (*http.Response, error) {
+	req, err := http.NewRequest(method, URL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	authority, err := GetFaviconAuthority(url)
+	authority, err := GetFaviconAuthority(URL)
 	if err != nil {
 		return nil, err // should not happen
+	}
+
+	if allowDomainChange {
+		client.CheckRedirect = nil
+	} else {
+		u, _ := url.ParseRequestURI(URL)
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if u.Hostname() != req.URL.Hostname() {
+				return ErrRedirectChangedHosts
+			}
+
+			return nil
+		}
 	}
 
 	// should bypass most WAFs
@@ -38,8 +52,8 @@ func DoRequest(method string, url string) (*http.Response, error) {
 	req.Header.Add("DNT", "1")
 	req.Header.Add("Accept", "image/avif,image/webp,*/*")
 	req.Header.Add("Cache-Control", "no-cache")
-	req.Header.Add("Referer", url[:authority])
-	req.Header.Add("Origin", url[:authority])
+	req.Header.Add("Referer", URL[:authority])
+	req.Header.Add("Origin", URL[:authority])
 	req.Header.Add("Sec-Fetch-Dest", "image")
 	req.Header.Add("Sec-Fetch-Mode", "no-cors")
 	req.Header.Add("Sec-Fetch-Site", "same-origin")
@@ -59,8 +73,8 @@ func Resolve(URL string) (string, error) {
 		baseURL: URL[:offset],
 	}
 
-	res, err := DoRequest("GET", icon.baseURL+"/favicon.ico")
-	if err != nil {
+	res, err := DoRequest("GET", icon.baseURL+"/favicon.ico", false)
+	if err != nil && !errors.Is(err, ErrRedirectChangedHosts) {
 		return "", errors.New("unreachable server")
 	}
 
@@ -70,7 +84,7 @@ func Resolve(URL string) (string, error) {
 		return res.Request.URL.String(), nil
 	}
 
-	res, err = DoRequest("GET", icon.RawURL)
+	res, err = DoRequest("GET", icon.RawURL, true)
 	if err != nil {
 		return "", errors.New("unreachable server")
 	}
@@ -141,16 +155,20 @@ func Resolve(URL string) (string, error) {
 	if baseHref != "" {
 		iconHref = baseHref + iconToTry
 	} else if iconToTry[0] == '/' {
-		iconHref = URL[:offset] + iconToTry
+		iconAuthorityOffset, err := GetFaviconAuthority(res.Request.URL.String())
+		if err != nil {
+			log.Debug().Str("type", "notfound").Str("url", URL).Send()
+			return "", nil
+		}
+
+		iconHref = res.Request.URL.String()[:iconAuthorityOffset] + iconToTry
 	} else if _, err = url.ParseRequestURI(iconToTry); err == nil {
 		iconHref = iconToTry
 	} else {
 		iconHref = strings.TrimRight(res.Request.URL.String(), "/") + "/" + iconToTry
 	}
 
-	fmt.Println(iconHref)
-
-	res, err = DoRequest("GET", iconHref)
+	res, err = DoRequest("GET", iconHref, true)
 	if err != nil {
 		return "", errors.New("unreachable server")
 	}
@@ -189,6 +207,11 @@ func hasValidMimeType(buf [64]byte) bool {
 
 	// webp
 	if str[:4] == "\x52\x49\x46\x46" && str[8:12] == "\x57\x45\x42\x50" {
+		return true
+	}
+
+	// gif
+	if str[:6] == "\x47\x49\x46\x38\x37\x61" || str[:6] == "\x47\x49\x46\x38\x39\x61" {
 		return true
 	}
 
