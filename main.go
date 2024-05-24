@@ -145,7 +145,7 @@ func cli() {
 	for _, arg := range os.Args[1:] {
 		resolved, err := favicon.Resolve(arg)
 
-		fmt.Println("=== arg")
+		fmt.Println("=== " + arg)
 		fmt.Printf("   resolved: %s\n", resolved)
 		fmt.Printf("   err: %s\n", err)
 		fmt.Println("===")

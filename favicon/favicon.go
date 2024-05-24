@@ -2,6 +2,7 @@ package favicon
 
 import (
 	"errors"
+	"fmt"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/net/html"
 	"net/http"
@@ -176,6 +177,7 @@ func Resolve(URL string) (string, error) {
 	buf = [64]byte{}
 	res.Body.Read(buf[:])
 	if !hasValidMimeType(buf) {
+		fmt.Println(buf)
 		return "", nil
 	}
 
@@ -184,7 +186,32 @@ func Resolve(URL string) (string, error) {
 
 func hasValidMimeType(buf [64]byte) bool {
 	// ico
+	// layout for future reference since this the way
+	// we handle them will probably change a bit
+	// 0 0 1 0 @4
+	//     ^^^ image type (1 is icon, else we don't care)
+	//        1 0 @6
+	//        ^^^ number of images in a file (2 bytes)
+	//			  16 16 @8 (0 means 256 pixels for each)
+	// 			  ^^^^^ width x height
+	//                  37 @9 (0 means 256 colors)
+	//                  ^^ color count
+	//                     0 @10
+	//                     ^ reserved bit
+	// 					     1 0 @12
+	//						 ^^^ color planes (0 or 1 for icon format)
+	//    						 1 0 @14
+	//						     ^^^ bits per pixels
+	//  						     0 0 0 0 @18
+	//            					 ^^^^^^^ size of the bitmap data in bytes
+	//                                       0 0 0 0 @22
+	// 										 ^^^^^^^ offset in the file
 	if buf[0] == 0 && buf[1] == 0 && buf[2] == 1 && buf[3] == 0 {
+		if buf[8] == 2 { // only two colors? probably a placeholder image
+			// this may return some false positives
+			return false
+		}
+
 		return true
 	}
 
