@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"faviconapi/static"
+	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/patrickmn/go-cache"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 	"go.uber.org/ratelimit"
 	"golang.org/x/net/context"
 	"image/png"
@@ -21,17 +23,24 @@ import (
 	"time"
 )
 
+const Version = "4"
+
+var versionMeta = map[string]string{
+	"version": Version,
+}
+
 type Context struct {
 	limiter ratelimit.Limiter
 	cache   *cache.Cache
 	s3      *s3.Client
+	log     zerolog.Logger
 }
 
 type HttpResponse struct {
-	Success bool           `json:"success"`
-	Status  int            `json:"status"`
-	Value   any            `json:"value"`
-	Meta    map[string]any `json:"meta"`
+	Success bool              `json:"success"`
+	Status  int               `json:"status"`
+	Value   any               `json:"value"`
+	Meta    map[string]string `json:"meta"`
 }
 
 var UnexpectedError = HttpResponse{
@@ -39,9 +48,9 @@ var UnexpectedError = HttpResponse{
 	Value:  "unexpected error",
 }
 
-func unexpectedError(err error) HttpResponse {
+func unexpectedError(ctx Context, err error) HttpResponse {
 	if err != nil {
-		log.Error().Err(err).Send()
+		ctx.log.Error().Err(err).Send()
 	}
 
 	return UnexpectedError
@@ -49,6 +58,7 @@ func unexpectedError(err error) HttpResponse {
 
 var s3Bucket string
 var cdnHostForBucket string
+var cacheEnabled *bool
 
 func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) HttpResponse {
 	URL := r.URL.String()
@@ -61,7 +71,7 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 	var err error
 	URL, err = url.QueryUnescape(URL[len("/api/v1/resolve")+1:])
 	if err != nil {
-		return unexpectedError(err)
+		return unexpectedError(ctx, err)
 	}
 
 	fallbackURL := strings.TrimSpace(r.URL.Query().Get("fallbackURL"))
@@ -70,49 +80,62 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 		return HttpResponse{Status: http.StatusBadRequest, Value: "url field must not be greater than 65,536 bytes"}
 	}
 
-	parsedUrl, err := url.ParseRequestURI(URL)
+	parsedURL, err := url.ParseRequestURI(URL)
 	if err != nil {
-		return HttpResponse{Status: http.StatusBadRequest, Value: "url field must be a valid url"}
-	}
-
-	objectKey := "favicons/" + parsedUrl.Hostname() + ".png"
-	objectURL := "https://" + cdnHostForBucket + "/" + objectKey
-
-	rw.Header().Add("Cache-Control", "max-age=604800, immutable") // one week
-
-	if _, ok := ctx.cache.Get(parsedUrl.Hostname()); ok {
-		return HttpResponse{Success: true, Value: objectURL}
-	}
-
-	_, err = ctx.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
-		Bucket: &s3Bucket,
-		Key:    &objectKey,
-	})
-	if err != nil {
-		var responseError *awshttp.ResponseError
-		if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
-			//
-		} else {
-			return unexpectedError(err)
+		// Is the scheme missing?
+		fixedURL, err := url.ParseRequestURI("https://" + URL)
+		if err != nil {
+			return HttpResponse{Status: http.StatusBadRequest, Value: "url field must be a valid url"}
 		}
-	} else {
-		ctx.cache.Set(parsedUrl.Hostname(), true, cache.DefaultExpiration)
 
-		return HttpResponse{Success: true, Value: objectURL}
+		parsedURL = fixedURL
+	}
+
+	objectKey := "favicons/" + parsedURL.Hostname() + ".png"
+	objectURL := "https://" + cdnHostForBucket + "/" + objectKey
+	cacheKey := parsedURL.Hostname() + Version
+
+	if *cacheEnabled {
+		// Zeroth layer: browser caching
+		rw.Header().Add("Cache-Control", "max-age=604800, immutable") // one week
+
+		// First layer: memory cache
+		if _, ok := ctx.cache.Get(cacheKey); ok {
+			return HttpResponse{Success: true, Value: objectURL, Meta: versionMeta}
+		}
+
+		// Second layer: lookup to see if there's an object with the future name of the icon.
+		head, err := ctx.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
+			Bucket: &s3Bucket,
+			Key:    &objectKey,
+		})
+		if err != nil {
+			var responseError *awshttp.ResponseError
+			if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
+				//
+			} else {
+				return unexpectedError(ctx, err)
+			}
+		} else {
+			if head.Metadata["version"] == Version {
+				ctx.cache.Set(cacheKey, true, cache.DefaultExpiration)
+
+				return HttpResponse{Success: true, Value: objectURL, Meta: versionMeta}
+			}
+
+			// New version, keep going
+		}
 	}
 
 	ctx.limiter.Take()
 
-	resolvedIcon, err := FindFaviconURL(parsedUrl)
+	resolvedIcon, err := FindFaviconURL(parsedURL)
 	if err != nil {
 		if errors.Is(err, ErrIconNotFound) {
 			return HttpResponse{
 				Success: true,
 				Status:  http.StatusOK,
 				Value:   fallbackURL,
-				Meta: map[string]any{
-					"isFallback": true,
-				},
 			}
 		}
 
@@ -128,7 +151,7 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 	patchedIcon, err := PatchIcon(resolvedIcon)
 	if err != nil {
 		_ = resolvedIcon.Body.Close()
-		return unexpectedError(err)
+		return unexpectedError(ctx, err)
 	}
 
 	_ = resolvedIcon.Body.Close()
@@ -136,7 +159,7 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 	buf := new(bytes.Buffer)
 	err = png.Encode(buf, patchedIcon)
 	if err != nil {
-		return unexpectedError(err)
+		return unexpectedError(ctx, err)
 	}
 
 	_, err = ctx.s3.PutObject(context.TODO(), &s3.PutObjectInput{
@@ -144,23 +167,29 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 		Key:         &objectKey,
 		Body:        buf,
 		ContentType: aws.String(resolvedIcon.Type.ContentType()),
+		Metadata:    versionMeta,
 		ACL:         "public-read",
 	})
 	if err != nil {
-		return unexpectedError(err)
+		return unexpectedError(ctx, err)
 	}
 
-	ctx.cache.Set(parsedUrl.Hostname(), true, cache.DefaultExpiration)
+	if *cacheEnabled {
+		ctx.cache.Set(cacheKey, true, cache.DefaultExpiration)
+	}
 
 	return HttpResponse{
 		Success: true,
 		Value:   objectURL,
+		Meta:    versionMeta,
 	}
 }
 
 func Endpoint(ctx Context, handler func(Context, http.ResponseWriter, *http.Request) HttpResponse) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		res := handler(ctx, rw, r)
+		elapsed := time.Since(start)
 		if res.Status == 0 {
 			res.Status = http.StatusOK
 		}
@@ -174,12 +203,23 @@ func Endpoint(ctx Context, handler func(Context, http.ResponseWriter, *http.Requ
 			ip = "local/" + r.RemoteAddr
 		}
 
-		log.Info().Str("ip", ip).
+		msg := ""
+
+		if !res.Success {
+			v, ok := res.Value.(string)
+			if ok {
+				msg = v
+			}
+		}
+
+		ctx.log.Info().Str("ip", ip).
 			Str("ua", r.Header.Get("User-Agent")).
 			Str("method", r.Method).
 			Str("path", r.URL.String()).
 			Int("status", res.Status).
 			Bool("ok", res.Success).
+			Str("resp", msg).
+			Int64("elapsed", elapsed.Milliseconds()).
 			Send()
 
 		return
@@ -210,14 +250,21 @@ func runHttpServer(port string) error {
 			BaseEndpoint: aws.String("https://" + endpoint),
 			Credentials:  credentials.NewStaticCredentialsProvider(accessKeyId, secretAccessKey, ""),
 		}),
+		log: zerolog.New(os.Stderr).With().Timestamp().Str("version", Version).Logger(),
 	}
 
 	http.Handle("/api/v1/resolve/", Endpoint(ctx, GetFaviconEndpoint))
+
+	ctx.log.Debug().Bool("cacheEnabled", *cacheEnabled).Msg("starting server")
 
 	return http.ListenAndServe(port, nil)
 }
 
 func main() {
+	cacheEnabled = flag.Bool("cache", static.CacheStatus == static.CacheEnabled, "enable caching")
+
+	flag.Parse()
+
 	err := runHttpServer(":3333")
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Cannot start server: %s\n", err)

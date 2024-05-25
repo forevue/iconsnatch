@@ -6,8 +6,6 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.27.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.16
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.3
-	github.com/mat/besticon/v3 v3.18.0
-	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/rs/zerolog v1.33.0
 	go.uber.org/ratelimit v0.3.1
 	golang.org/x/image v0.15.0
@@ -27,5 +25,6 @@ require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	golang.org/x/sys v0.20.0 // indirect
 )

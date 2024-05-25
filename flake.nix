@@ -9,16 +9,18 @@
       (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-
         in
         {
           packages.default = pkgs.buildGoModule {
-            name = "app";
-            version = "dev";
+                                                                                  name = "app";
+                                                                                  version = "dev";
 
-            vendorHash = "sha256-uHmNNKiugk0B/OwMmZeOAIrpxT5WmS5Sa2WH70N5p+w=";
-            src = ./.;
-          };
+                                                                                  CGO_ENABLED = 0;
+
+                                                                                ldflags = [ "-X faviconapi/static.CacheStatus=enabled" ];
+                                                                                  vendorHash = "sha256-Bs1Ni2r8Fs3LVfYFRT85dwttVYZpCQBeQkbl4ta6Ug8=";
+                                                                                  src = ./.;
+                                                                                };
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [ go ];

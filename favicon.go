@@ -3,20 +3,20 @@ package main
 import (
 	"bytes"
 	"errors"
+	_ "faviconapi/ico"
+	"faviconapi/iconpatch"
 	"fmt"
-	"github.com/mat/besticon/v3/ico"
-	"golang.org/x/image/bmp"
-	"golang.org/x/image/draw"
-	"golang.org/x/image/webp"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
 	"image"
-	"image/color"
-	"image/gif"
-	"image/jpeg"
-	"image/png"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -54,7 +54,6 @@ const (
 
 var (
 	ErrUnreachableServer    = errors.New("unreachable server")
-	ErrBadURL               = errors.New("bad url")
 	ErrIconNotFound         = errors.New("icon not found")
 	errRedirectChangedHosts = errors.New("bad redirect")
 )
@@ -93,6 +92,8 @@ func FindFaviconURL(URL *url.URL) (*ResolvedIcon, error) {
 	baseHref := ""
 	iconToTry := ""
 
+	var largestSize int64
+
 	for {
 		tt := htmlTokens.Next()
 		if tt == html.ErrorToken { // includes EOF
@@ -115,6 +116,7 @@ func FindFaviconURL(URL *url.URL) (*ResolvedIcon, error) {
 			relAttr := ""
 			hrefAttr := ""
 			typeAttr := ""
+			sizesAttr := ""
 
 			for _, attr := range t.Attr {
 				if attr.Key == "rel" {
@@ -131,12 +133,40 @@ func FindFaviconURL(URL *url.URL) (*ResolvedIcon, error) {
 					typeAttr = attr.Val
 					continue
 				}
+
+				if attr.Key == "sizes" {
+					sizesAttr = attr.Val
+					continue
+				}
 			}
 
 			if (relAttr != "shortcut icon" && relAttr != "icon") || relAttr == "" || hrefAttr == "" || typeAttr == "image/svg+xml" {
 				continue
 			}
 
+			if len(hrefAttr) > 4 && hrefAttr[len(hrefAttr)-4:] == ".svg" {
+				continue
+			}
+
+			if sizesAttr != "" {
+				// Guessing it's place
+				xOffset := len(sizesAttr) / 2
+				if sizesAttr[xOffset] != 'x' {
+					goto setIcon
+				}
+
+				size, err := strconv.ParseInt(sizesAttr[:xOffset], 10, 64)
+				if err != nil {
+					// the
+					goto setIcon
+				}
+
+				if size < largestSize {
+					continue
+				}
+			}
+
+		setIcon:
 			// todo: we need to give priority to the last
 			// We take the first non-svg icon that we find.
 			iconToTry = hrefAttr
@@ -204,56 +234,13 @@ func ReaderCloser(closer io.Closer, buf ...io.Reader) io.ReadCloser {
 	}
 }
 
-func PatchIcon(resolvedIcon *ResolvedIcon) (*image.RGBA64, error) {
-	var icon image.Image
-	var err error
-
-	switch resolvedIcon.Type {
-	case Ico:
-		icon, err = ico.Decode(resolvedIcon.Body)
-	case Gif:
-
-		icon, err = gif.Decode(resolvedIcon.Body)
-	case Png:
-
-		icon, err = png.Decode(resolvedIcon.Body)
-	case Jpeg:
-		icon, err = jpeg.Decode(resolvedIcon.Body)
-	case Webp:
-		icon, err = webp.Decode(resolvedIcon.Body)
-	case Bmp:
-		icon, err = bmp.Decode(resolvedIcon.Body)
-	}
-
+func PatchIcon(resolvedIcon *ResolvedIcon) (*image.NRGBA64, error) {
+	icon, _, err := image.Decode(resolvedIcon.Body)
 	if err != nil {
 		return nil, fmt.Errorf("PatchIcon(%d, %s): %w", resolvedIcon.Type, resolvedIcon.URL, err)
 	}
 
-	return convertImage(icon), nil
-}
-
-const ish = 650
-
-func convertImage(icon image.Image) *image.RGBA64 {
-	bounds := icon.Bounds()
-	rgba := image.NewRGBA64(bounds)
-
-	draw.Draw(rgba, bounds, icon, bounds.Min, draw.Over)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.Y; x++ {
-			r, g, b, a := rgba.At(x, y).RGBA()
-
-			if r >= 0xFFFF-ish && g >= 0xFFFF-ish && b >= 0xFFFF-ish {
-				rgba.Set(x, y, color.RGBA{0, 0, 0, 0})
-			} else if r == 0 && g == 0 && b == 0 {
-				rgba.Set(x, y, color.RGBA{0, 0, 0, 0})
-			} else {
-				rgba.Set(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
-			}
-		}
-	}
-
-	return rgba
+	return iconpatch.Patch(icon), nil
 }
 
 func getBaseURL(URL *url.URL) string {
