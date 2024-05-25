@@ -1,13 +1,18 @@
-FROM golang:alpine@sha256:1b455a3f7786e5765dbeb4f7ab32a36cdc0c3f4ddd35406606df612dc6e3269b as app-builder
+FROM nixos/nix:latest as builder
 
-WORKDIR /go/src/app
-COPY . .
-RUN apk add git
+COPY . /tmp/build
+WORKDIR /tmp/build
 
-RUN CGO_ENABLED=0 go install -ldflags '-extldflags "-static"' -tags timetzdata
+RUN nix --extra-experimental-features "nix-command flakes" --option filter-syscalls false build
+
+RUN mkdir /tmp/nix-store-closure
+RUN cp -R $(nix-store -qR result/) /tmp/nix-store-closure
 
 FROM scratch
 
-COPY --from=app-builder /go/bin/faviconapi /faviconapi
+COPY --from=builder /tmp/nix-store-closure /nix/store
+COPY --from=builder /tmp/build/result /app
+
 COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-ENTRYPOINT ["/faviconapi"]
+
+CMD ["/app/bin/faviconapi"]

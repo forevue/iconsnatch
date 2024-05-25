@@ -3,7 +3,17 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"github.com/mat/besticon/v3/ico"
+	"golang.org/x/image/bmp"
+	"golang.org/x/image/draw"
+	"golang.org/x/image/webp"
 	"golang.org/x/net/html"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,10 +24,29 @@ import (
 
 type IconType byte
 
+func (i IconType) ContentType() string {
+	switch i {
+	case Ico:
+		return "image/x-icon"
+	case Png:
+		return "image/png"
+	case Jpeg:
+		return "image/jpeg"
+	case Webp:
+		return "image/webp"
+	case Gif:
+		return "image/gif"
+	case Bmp:
+		return "image/bmp"
+	default:
+		panic("should not happen")
+	}
+}
+
 const (
 	Ico = 1 + iota
 	Png
-	Jpg
+	Jpeg
 	Webp
 	Gif
 	Bmp
@@ -175,12 +204,64 @@ func ReaderCloser(closer io.Closer, buf ...io.Reader) io.ReadCloser {
 	}
 }
 
+func PatchIcon(resolvedIcon *ResolvedIcon) (*image.RGBA64, error) {
+	var icon image.Image
+	var err error
+
+	switch resolvedIcon.Type {
+	case Ico:
+		icon, err = ico.Decode(resolvedIcon.Body)
+	case Gif:
+
+		icon, err = gif.Decode(resolvedIcon.Body)
+	case Png:
+
+		icon, err = png.Decode(resolvedIcon.Body)
+	case Jpeg:
+		icon, err = jpeg.Decode(resolvedIcon.Body)
+	case Webp:
+		icon, err = webp.Decode(resolvedIcon.Body)
+	case Bmp:
+		icon, err = bmp.Decode(resolvedIcon.Body)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("PatchIcon(%d, %s): %w", resolvedIcon.Type, resolvedIcon.URL, err)
+	}
+
+	return convertImage(icon), nil
+}
+
+const ish = 650
+
+func convertImage(icon image.Image) *image.RGBA64 {
+	bounds := icon.Bounds()
+	rgba := image.NewRGBA64(bounds)
+
+	draw.Draw(rgba, bounds, icon, bounds.Min, draw.Over)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.Y; x++ {
+			r, g, b, a := rgba.At(x, y).RGBA()
+
+			if r >= 0xFFFF-ish && g >= 0xFFFF-ish && b >= 0xFFFF-ish {
+				rgba.Set(x, y, color.RGBA{0, 0, 0, 0})
+			} else if r == 0 && g == 0 && b == 0 {
+				rgba.Set(x, y, color.RGBA{0, 0, 0, 0})
+			} else {
+				rgba.Set(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
+			}
+		}
+	}
+
+	return rgba
+}
+
 func getBaseURL(URL *url.URL) string {
-	var buf *strings.Builder
+	buf := &strings.Builder{}
 
 	buf.WriteString(URL.Scheme)
 	buf.WriteString("://")
-	buf.WriteString(URL.Hostname())
+	buf.WriteString(URL.Host)
 
 	return buf.String()
 }
@@ -273,12 +354,12 @@ func hasValidMimeType(buf [64]byte) (IconType, bool) {
 
 	// jpeg
 	if str[:9] == "\xFF\xD8\xFF\xFF\xE0\x00\x10\x4A\x46" || str[:4] == "\x49\x46\x00\x01" || str[:4] == "\xFF\xD8\xFF\xEE" || str[:4] == "\xFF\xD8\xFF\xE0" {
-		return Jpg, true
+		return Jpeg, true
 	}
 
 	// jpeg 1?
 	if str[:4] == "\xFF\xD8\xFF\xE1" && str[6:12] == "\x45\x78\x69\x66\x00\x00" {
-		return Jpg, true
+		return Jpeg, true
 	}
 
 	// webp
