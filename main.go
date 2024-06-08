@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"faviconapi/static"
+	"faviconapi/defaults"
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,11 +23,7 @@ import (
 	"time"
 )
 
-const Version = "4"
-
-var versionMeta = map[string]string{
-	"version": Version,
-}
+const Version = "13"
 
 type Context struct {
 	limiter ratelimit.Limiter
@@ -58,10 +54,13 @@ func unexpectedError(ctx Context, err error) HttpResponse {
 
 var s3Bucket string
 var cdnHostForBucket string
-var cacheEnabled *bool
 
 func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) HttpResponse {
 	URL := r.URL.String()
+
+	iconMetadata := map[string]string{
+		"version": Version,
+	}
 
 	// Sanity check to prevent against path-traversal shenanigans from a malicious user agent.
 	if !strings.HasPrefix(URL, "/api/v1/resolve") {
@@ -95,13 +94,13 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 	objectURL := "https://" + cdnHostForBucket + "/" + objectKey
 	cacheKey := parsedURL.Hostname() + Version
 
-	if *cacheEnabled {
+	if defaults.CacheStatus == defaults.CacheEnabled {
 		// Zeroth layer: browser caching
 		rw.Header().Add("Cache-Control", "max-age=604800, immutable") // one week
 
 		// First layer: memory cache
-		if _, ok := ctx.cache.Get(cacheKey); ok {
-			return HttpResponse{Success: true, Value: objectURL, Meta: versionMeta}
+		if meta, ok := ctx.cache.Get(cacheKey); ok {
+			return HttpResponse{Success: true, Value: objectURL, Meta: meta.(map[string]string)}
 		}
 
 		// Second layer: lookup to see if there's an object with the future name of the icon.
@@ -118,9 +117,9 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 			}
 		} else {
 			if head.Metadata["version"] == Version {
-				ctx.cache.Set(cacheKey, true, cache.DefaultExpiration)
+				ctx.cache.Set(cacheKey, head.Metadata, cache.DefaultExpiration)
 
-				return HttpResponse{Success: true, Value: objectURL, Meta: versionMeta}
+				return HttpResponse{Success: true, Value: objectURL, Meta: head.Metadata}
 			}
 
 			// New version, keep going
@@ -136,6 +135,7 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 				Success: true,
 				Status:  http.StatusOK,
 				Value:   fallbackURL,
+				Meta:    iconMetadata,
 			}
 		}
 
@@ -148,10 +148,16 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 		}
 	}
 
-	patchedIcon, err := PatchIcon(resolvedIcon)
+	patchedIcon, filled, err := PatchIcon(resolvedIcon)
 	if err != nil {
 		_ = resolvedIcon.Body.Close()
 		return unexpectedError(ctx, err)
+	}
+
+	if filled {
+		iconMetadata["filled"] = "yes"
+	} else {
+		iconMetadata["filled"] = "no"
 	}
 
 	_ = resolvedIcon.Body.Close()
@@ -167,21 +173,21 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 		Key:         &objectKey,
 		Body:        buf,
 		ContentType: aws.String(resolvedIcon.Type.ContentType()),
-		Metadata:    versionMeta,
+		Metadata:    iconMetadata,
 		ACL:         "public-read",
 	})
 	if err != nil {
 		return unexpectedError(ctx, err)
 	}
 
-	if *cacheEnabled {
-		ctx.cache.Set(cacheKey, true, cache.DefaultExpiration)
+	if defaults.CacheStatus == defaults.CacheEnabled {
+		ctx.cache.Set(cacheKey, iconMetadata, cache.DefaultExpiration)
 	}
 
 	return HttpResponse{
 		Success: true,
 		Value:   objectURL,
-		Meta:    versionMeta,
+		Meta:    iconMetadata,
 	}
 }
 
@@ -255,15 +261,21 @@ func runHttpServer(port string) error {
 
 	http.Handle("/api/v1/resolve/", Endpoint(ctx, GetFaviconEndpoint))
 
-	ctx.log.Debug().Bool("cacheEnabled", *cacheEnabled).Msg("starting server")
+	ctx.log.Debug().Str("cacheStatus", defaults.CacheStatus).Msg("starting server")
 
 	return http.ListenAndServe(port, nil)
 }
 
 func main() {
-	cacheEnabled = flag.Bool("cache", static.CacheStatus == static.CacheEnabled, "enable caching")
+	cacheFlag := flag.Bool("cache", defaults.CacheStatus == defaults.CacheEnabled, "enable caching")
 
 	flag.Parse()
+
+	if *cacheFlag {
+		defaults.CacheStatus = defaults.CacheEnabled
+	} else {
+		defaults.CacheStatus = defaults.CacheDisabled
+	}
 
 	err := runHttpServer(":3333")
 	if err != nil {

@@ -12,15 +12,15 @@
         in
         {
           packages.default = pkgs.buildGoModule {
-                                                                                  name = "app";
-                                                                                  version = "dev";
+              name = "app";
+              version = "dev";
 
-                                                                                  CGO_ENABLED = 0;
+              CGO_ENABLED = 0;
 
-                                                                                ldflags = [ "-X faviconapi/static.CacheStatus=enabled" ];
-                                                                                  vendorHash = "sha256-Bs1Ni2r8Fs3LVfYFRT85dwttVYZpCQBeQkbl4ta6Ug8=";
-                                                                                  src = ./.;
-                                                                                };
+              ldflags = [ "-X faviconapi/defaults.CacheStatus=enabled" ];
+                  vendorHash = "sha256-Bs1Ni2r8Fs3LVfYFRT85dwttVYZpCQBeQkbl4ta6Ug8=";
+                  src = ./.;
+              };
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [ go ];

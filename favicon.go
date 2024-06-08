@@ -234,13 +234,15 @@ func ReaderCloser(closer io.Closer, buf ...io.Reader) io.ReadCloser {
 	}
 }
 
-func PatchIcon(resolvedIcon *ResolvedIcon) (*image.NRGBA64, error) {
+func PatchIcon(resolvedIcon *ResolvedIcon) (*image.NRGBA64, bool, error) {
 	icon, _, err := image.Decode(resolvedIcon.Body)
 	if err != nil {
-		return nil, fmt.Errorf("PatchIcon(%d, %s): %w", resolvedIcon.Type, resolvedIcon.URL, err)
+		return nil, false, fmt.Errorf("PatchIcon(%d, %s): %w", resolvedIcon.Type, resolvedIcon.URL, err)
 	}
 
-	return iconpatch.Patch(icon), nil
+	img, filled := iconpatch.Patch(icon)
+
+	return img, filled, nil
 }
 
 func getBaseURL(URL *url.URL) string {

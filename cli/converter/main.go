@@ -39,7 +39,7 @@ func run(args []string) error {
 
 	f.Close()
 
-	img := iconpatch.Patch(raw)
+	img, _ := iconpatch.Patch(raw)
 
 	var newBuf bytes.Buffer
 	err = png.Encode(&newBuf, img)
@@ -48,9 +48,6 @@ func run(args []string) error {
 	}
 
 	//asBase64 := base64.StdEncoding.EncodeToString(newBuf.Bytes())
-	//
-	//
-	//
 	//err = exec.Command("firefox", "data:image/jpeg;base64,"+asBase64).Run()
 	//if err != nil {
 	//	return err
