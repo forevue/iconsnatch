@@ -139,13 +139,14 @@ func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) Ht
 			}
 		}
 
-		// The errors returned from FindFaviconUrl are all known
-		// and intentionally vague enough that we can safely return
-		// them.
-		return HttpResponse{
-			Status: http.StatusBadRequest,
-			Value:  err.Error(),
+		if errors.Is(err, ErrUnreachableServer) {
+			return HttpResponse{
+				Status: http.StatusBadRequest,
+				Value:  err.Error(),
+			}
 		}
+
+		return unexpectedError(ctx, err)
 	}
 
 	patchedIcon, filled, err := PatchIcon(resolvedIcon)

@@ -140,7 +140,7 @@ func FindFaviconURL(URL *url.URL) (*ResolvedIcon, error) {
 				}
 			}
 
-			if (relAttr != "shortcut icon" && relAttr != "icon") || relAttr == "" || hrefAttr == "" || typeAttr == "image/svg+xml" {
+			if (relAttr != "shortcut icon" && relAttr != "icon") || hrefAttr == "" || typeAttr == "image/svg+xml" {
 				continue
 			}
 
@@ -196,7 +196,7 @@ func FindFaviconURL(URL *url.URL) (*ResolvedIcon, error) {
 
 	res, err = doRequest("GET", iconHref, true)
 	if err != nil {
-		return nil, errors.New("unreachable server")
+		return nil, ErrUnreachableServer
 	}
 
 	buf = [64]byte{}
@@ -271,9 +271,7 @@ func doRequest(method string, URL string, allowDomainChange bool) (*http.Respons
 			from := parsedURL.Hostname()
 			to := req.URL.Hostname()
 
-			// The www. domain is not really another domain from
-			// where we stand, so we allow it.
-			// We could probably allow all subdomains as well.
+			// The www. domain is not really another domain, in our case.
 			if from != to && (to[4:] != from && to[:4] == "www.") {
 				return errRedirectChangedHosts
 			}

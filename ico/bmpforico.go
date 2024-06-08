@@ -1,11 +1,11 @@
 // Copyright 2011 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
+// See https://github.com/golang/go/blob/master/LICENSE
 
-// Package bmp implements a BMP image decoder and encoder.
-//
-// The BMP specification is at http://www.digicamsoft.com/bmp/bmp.html.
-package ico // import "golang.org/x/image/bmp"
+// Package ico This is a copy of the original BMP Encoder and Decoder
+// adapted to support BMP-inside-ICO file format.
+package ico
 
 import (
 	"errors"
@@ -244,7 +244,7 @@ func decodeConfig(r io.Reader) (config image.Config, bitsPerPixel int, topDown b
 		// vs later (larger) headers.
 		//
 		// HERE: Previously, this line was infoLen > infoHeaderLen, which could be correct (?)
-		// except for BMP with ICO, for which >= matches Chrome and Firefox's behavior.
+		// except for BMP with ICO, for which infoLen >= infoHeaderLen matches Chrome and Firefox's behavior.
 		allowAlpha = infoLen >= infoHeaderLen
 		return image.Config{ColorModel: color.RGBAModel, Width: width, Height: height}, 32, topDown, allowAlpha, nil
 	}

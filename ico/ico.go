@@ -2,6 +2,7 @@
 // for the icon (container) format.
 // What follow is taken almost verbatim from https://github.com/mat/besticon.
 // Everything good in this file comes from him.
+// This file is MIT licensed.
 package ico
 
 import (
