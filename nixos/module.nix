@@ -14,7 +14,7 @@ in {
 
     listenAddr = mkOption {
       type = types.str;
-      default = ":8080";
+      default = "0.0.0.0:8080";
       description = lib.mdDoc "The address to listen on for HTTP requests.";
     };
 
