@@ -163,6 +163,8 @@ func getBaseURL(URL *url.URL) string {
 }
 
 func doRequest(ctx context.Context, method string, URL string, allowDomainChange bool) (*http.Response, error) {
+	<-requestThrottle
+
 	parsedURL, err := url.ParseRequestURI(URL)
 	if err != nil {
 		return nil, err
