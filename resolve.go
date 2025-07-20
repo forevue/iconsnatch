@@ -22,8 +22,9 @@ const maxURLBytes = 1 << 16 // 65,536 bytes
 
 // resolveResponse defines the structure for the JSON response.
 type resolveResponse struct {
-	IconURL string `json:"icon_url"`
-	Filled  bool   `json:"filled"`
+	IconURL  string `json:"icon_url"`
+	IconHash string `json:"icon_hash"`
+	Filled   bool   `json:"filled"`
 }
 
 // httpError sends a JSON error response, logs the error, and records the error on the current span.
@@ -131,8 +132,9 @@ func resolveHandler(w http.ResponseWriter, r *http.Request, tracer trace.Tracer,
 	// 6. Send the successful JSON response.
 	span.SetStatus(codes.Ok, "success")
 	response := resolveResponse{
-		IconURL: fmt.Sprintf("%s/api/v1/show/%s", publicURL, filename),
-		Filled:  filled,
+		IconURL:  fmt.Sprintf("%s/api/v1/show/%s", publicURL, filename),
+		IconHash: filename,
+		Filled:   filled,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Add("Cache-Control", "max-age=604800, immutable")

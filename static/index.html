@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>iconsnatch</title>
+    </head>
+    <body
+        style="
+            font-family: &quot;Courier New&quot;, Courier, monospace;
+            background-color: #1a202c;
+            color: #f7fafc;
+        "
+    >
+        <div
+            style="
+                max-width: 960px;
+                margin-left: auto;
+                margin-right: auto;
+                padding: 2rem;
+            "
+        >
+            <h1
+                style="
+                    font-size: 2.25rem;
+                    font-weight: 700;
+                    margin-bottom: 1rem;
+                "
+            >
+                iconsnatch
+            </h1>
+            <p style="margin-bottom: 2rem">
+                A simple service that fetches and transforms a website's logo so
+                it suitable for display in UIs.
+            </p>
+
+            <div
+                style="
+                    background-color: #2d3748;
+                    padding: 1.5rem;
+                    border-radius: 0.5rem;
+                    margin-bottom: 2rem;
+                "
+            >
+                <h2
+                    style="
+                        font-size: 1.5rem;
+                        font-weight: 700;
+                        margin-bottom: 1rem;
+                    "
+                >
+                    What it does
+                </h2>
+                <p>
+                    `iconsnatch` fetches the favicon for a given domain, checks
+                    whether it is filled or not, and removes unwanted white
+                    backgrounds.
+                </p>
+            </div>
+
+            <div
+                style="
+                    background-color: #2d3748;
+                    padding: 1.5rem;
+                    border-radius: 0.5rem;
+                "
+            >
+                <h2
+                    style="
+                        font-size: 1.5rem;
+                        font-weight: 700;
+                        margin-bottom: 1rem;
+                    "
+                >
+                    How to use it
+                </h2>
+                <p style="margin-bottom: 1rem">
+                    To resolve an icon, make a GET request to the
+                    `/api/v1/resolve` endpoint with a `url` query parameter.
+                </p>
+                <div
+                    style="
+                        background-color: #1a202c;
+                        padding: 1rem;
+                        border-radius: 0.25rem;
+                        margin-bottom: 1rem;
+                    "
+                >
+                    <pre><code style="color: #68d391;">GET /api/v1/resolve?url=&lt;your-website.com&gt;</code></pre>
+                </div>
+                <p style="margin-bottom: 1rem">
+                    The service will return a JSON object with the URL of the
+                    cached icon.
+                </p>
+                <div
+                    style="
+                        background-color: #1a202c;
+                        padding: 1rem;
+                        border-radius: 0.25rem;
+                        margin-bottom: 1rem;
+                    "
+                >
+                    <pre><code style="color: #68d391;">{
+  "icon_hash": "&lt;sha256-hash&gt;.webp",
+  "icon_url": "https://iconsnatch.forevue.org/api/v1/show/&lt;sha256-hash&gt;.webp",
+  "filled": true
+}</code></pre>
+                </div>
+                <p>
+                    You can then use this URL to display the icon in your
+                    application.
+                </p>
+                <div
+                    style="
+                        background-color: #1a202c;
+                        padding: 1rem;
+                        border-radius: 0.25rem;
+                    "
+                >
+                    <pre><code style="color: #68d391;">&lt;img src="http://localhost:8080/api/v1/show/&lt;sha256-hash-of-url&gt;.webp"&gt;</code></pre>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

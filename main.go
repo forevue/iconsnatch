@@ -170,6 +170,9 @@ func main() {
 	showHandler := http.StripPrefix("/api/v1/show/", iconServer)
 	mux.Handle("/api/v1/show/", loggingMiddleware(showHandler))
 
+	fs := http.FileServer(http.Dir("./static"))
+	mux.Handle("/", fs)
+
 	server := &http.Server{
 		Addr:    *listenAddr,
 		Handler: mux,
