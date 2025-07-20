@@ -29,20 +29,6 @@ in {
       default = "/var/lib/iconsnatch/icons";
       description = lib.mdDoc "The directory to store icons in.";
     };
-
-    otelEndpoint = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description =
-        lib.mdDoc "The OTLP exporter endpoint. For example, 'localhost:4317'.";
-    };
-
-    otelInsecure = mkOption {
-      type = types.bool;
-      default = false;
-      description =
-        lib.mdDoc "Use an insecure connection to the OTLP exporter.";
-    };
   };
 
   config = mkIf cfg.enable {
@@ -70,10 +56,7 @@ in {
             "--listen-addr=${cfg.listenAddr}"
             "--public-url=${cfg.publicURL}"
             "--storage-dir=${cfg.storageDir}"
-          ] ++ lib.optionals (cfg.otelEndpoint != null)
-            [ "--otel-exporter-otlp-endpoint=${cfg.otelEndpoint}" ]
-            ++ lib.optionals (cfg.otelEndpoint != null && cfg.otelInsecure)
-            [ "--otel-exporter-otlp-insecure" ];
+          ];
         in "${cfg.package}/bin/iconsnatch ${lib.concatStringsSep " " flags}";
         Restart = "on-failure";
         RestartSec = "5s";
