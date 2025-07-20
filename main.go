@@ -1,286 +1,213 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
-	"faviconapi/defaults"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/patrickmn/go-cache"
-	"github.com/rs/zerolog"
-	"go.uber.org/ratelimit"
-	"golang.org/x/net/context"
-	"image/png"
+	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
-const Version = "13"
+// setupOtelSDK initializes the OpenTelemetry SDK with trace and metric providers.
+// It returns a shutdown function to be called on application exit.
+func setupOtelSDK(ctx context.Context, endpoint string, insecure bool) (shutdown func(context.Context) error, err error) {
+	var shutdownFuncs []func(context.Context) error
 
-type Context struct {
-	limiter ratelimit.Limiter
-	cache   *cache.Cache
-	s3      *s3.Client
-	log     zerolog.Logger
-}
+	// shutdown calls cleanup functions registered via shutdownFuncs.
+	// The errors from the calls are joined.
+	shutdown = func(ctx context.Context) error {
+		var err error
+		for _, fn := range shutdownFuncs {
+			err = errors.Join(err, fn(ctx))
+		}
+		shutdownFuncs = nil
+		return err
+	}
 
-type HttpResponse struct {
-	Success bool              `json:"success"`
-	Status  int               `json:"status"`
-	Value   any               `json:"value"`
-	Meta    map[string]string `json:"meta"`
-}
+	// handleErr calls shutdown for cleanup and returns the error.
+	handleErr := func(inErr error) {
+		err = errors.Join(inErr, shutdown(ctx))
+	}
 
-var UnexpectedError = HttpResponse{
-	Status: http.StatusInternalServerError,
-	Value:  "unexpected error",
-}
-
-func unexpectedError(ctx Context, err error) HttpResponse {
+	// Set up resource.
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			// the service name used to display traces in backends
+			semconv.ServiceName("iconsnatch-server"),
+		),
+	)
 	if err != nil {
-		ctx.log.Error().Err(err).Send()
-	}
-
-	return UnexpectedError
-}
-
-var s3Bucket string
-var cdnHostForBucket string
-
-func GetFaviconEndpoint(ctx Context, rw http.ResponseWriter, r *http.Request) HttpResponse {
-	URL := r.URL.String()
-
-	iconMetadata := map[string]string{
-		"version": Version,
-	}
-
-	// Sanity check to prevent against path-traversal shenanigans from a malicious user agent.
-	if !strings.HasPrefix(URL, "/api/v1/resolve") {
-		return HttpResponse{Status: http.StatusBadRequest, Value: "url field must be a valid url"}
-	}
-
-	var err error
-	URL, err = url.QueryUnescape(URL[len("/api/v1/resolve")+1:])
-	if err != nil {
-		return unexpectedError(ctx, err)
-	}
-
-	fallbackURL := strings.TrimSpace(r.URL.Query().Get("fallbackURL"))
-
-	if len(URL) > 1<<16 {
-		return HttpResponse{Status: http.StatusBadRequest, Value: "url field must not be greater than 65,536 bytes"}
-	}
-
-	parsedURL, err := url.ParseRequestURI(URL)
-	if err != nil {
-		// Is the scheme missing?
-		fixedURL, err := url.ParseRequestURI("https://" + URL)
-		if err != nil {
-			return HttpResponse{Status: http.StatusBadRequest, Value: "url field must be a valid url"}
-		}
-
-		parsedURL = fixedURL
-	}
-
-	objectKey := "favicons/" + parsedURL.Hostname() + ".png"
-	objectURL := "https://" + cdnHostForBucket + "/" + objectKey
-	cacheKey := parsedURL.Hostname() + Version
-
-	if defaults.CacheStatus == defaults.CacheEnabled {
-		// Zeroth layer: browser caching
-		rw.Header().Add("Cache-Control", "max-age=604800, immutable") // one week
-
-		// First layer: memory cache
-		if meta, ok := ctx.cache.Get(cacheKey); ok {
-			return HttpResponse{Success: true, Value: objectURL, Meta: meta.(map[string]string)}
-		}
-
-		// Second layer: lookup to see if there's an object with the future name of the icon.
-		head, err := ctx.s3.HeadObject(context.TODO(), &s3.HeadObjectInput{
-			Bucket: &s3Bucket,
-			Key:    &objectKey,
-		})
-		if err != nil {
-			var responseError *awshttp.ResponseError
-			if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
-				//
-			} else {
-				return unexpectedError(ctx, err)
-			}
-		} else {
-			if head.Metadata["version"] == Version {
-				ctx.cache.Set(cacheKey, head.Metadata, cache.DefaultExpiration)
-
-				return HttpResponse{Success: true, Value: objectURL, Meta: head.Metadata}
-			}
-
-			// New version, keep going
-		}
-	}
-
-	ctx.limiter.Take()
-
-	resolvedIcon, err := FindFaviconURL(parsedURL)
-	if err != nil {
-		if errors.Is(err, ErrIconNotFound) {
-			return HttpResponse{
-				Success: true,
-				Status:  http.StatusOK,
-				Value:   fallbackURL,
-				Meta:    iconMetadata,
-			}
-		}
-
-		if errors.Is(err, ErrUnreachableServer) {
-			return HttpResponse{
-				Status: http.StatusBadRequest,
-				Value:  err.Error(),
-			}
-		}
-
-		return unexpectedError(ctx, err)
-	}
-
-	patchedIcon, filled, err := PatchIcon(resolvedIcon)
-	if err != nil {
-		_ = resolvedIcon.Body.Close()
-		return unexpectedError(ctx, err)
-	}
-
-	if filled {
-		iconMetadata["filled"] = "yes"
-	} else {
-		iconMetadata["filled"] = "no"
-	}
-
-	_ = resolvedIcon.Body.Close()
-
-	buf := new(bytes.Buffer)
-	err = png.Encode(buf, patchedIcon)
-	if err != nil {
-		return unexpectedError(ctx, err)
-	}
-
-	_, err = ctx.s3.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket:      &s3Bucket,
-		Key:         &objectKey,
-		Body:        buf,
-		ContentType: aws.String(resolvedIcon.Type.ContentType()),
-		Metadata:    iconMetadata,
-		ACL:         "public-read",
-	})
-	if err != nil {
-		return unexpectedError(ctx, err)
-	}
-
-	if defaults.CacheStatus == defaults.CacheEnabled {
-		ctx.cache.Set(cacheKey, iconMetadata, cache.DefaultExpiration)
-	}
-
-	return HttpResponse{
-		Success: true,
-		Value:   objectURL,
-		Meta:    iconMetadata,
-	}
-}
-
-func Endpoint(ctx Context, handler func(Context, http.ResponseWriter, *http.Request) HttpResponse) http.Handler {
-	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		res := handler(ctx, rw, r)
-		elapsed := time.Since(start)
-		if res.Status == 0 {
-			res.Status = http.StatusOK
-		}
-
-		rw.Header().Add("Content-Type", "application/json")
-		rw.WriteHeader(res.Status)
-		_ = json.NewEncoder(rw).Encode(res)
-
-		ip := r.Header.Get("CF-Connecting-IP")
-		if ip == "" {
-			ip = "local/" + r.RemoteAddr
-		}
-
-		msg := ""
-
-		if !res.Success {
-			v, ok := res.Value.(string)
-			if ok {
-				msg = v
-			}
-		}
-
-		ctx.log.Info().Str("ip", ip).
-			Str("ua", r.Header.Get("User-Agent")).
-			Str("method", r.Method).
-			Str("path", r.URL.String()).
-			Int("status", res.Status).
-			Bool("ok", res.Success).
-			Str("resp", msg).
-			Int64("elapsed", elapsed.Milliseconds()).
-			Send()
-
+		handleErr(fmt.Errorf("failed to create resource: %w", err))
 		return
-	})
+	}
+
+	// Set up propagator.
+	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+	otel.SetTextMapPropagator(prop)
+
+	// Set up trace provider.
+	traceExporterOpts := []otlptracegrpc.Option{}
+	if endpoint != "" {
+		traceExporterOpts = append(traceExporterOpts, otlptracegrpc.WithEndpoint(endpoint))
+	}
+	if insecure {
+		traceExporterOpts = append(traceExporterOpts, otlptracegrpc.WithInsecure())
+	}
+	traceExporter, err := otlptracegrpc.New(ctx, traceExporterOpts...)
+	if err != nil {
+		handleErr(fmt.Errorf("failed to create trace exporter: %w", err))
+		return
+	}
+	traceProvider := trace.NewTracerProvider(
+		trace.WithBatcher(traceExporter),
+		trace.WithResource(res),
+	)
+	shutdownFuncs = append(shutdownFuncs, traceProvider.Shutdown)
+	otel.SetTracerProvider(traceProvider)
+
+	// Set up meter provider.
+	metricExporterOpts := []otlpmetricgrpc.Option{}
+	if endpoint != "" {
+		metricExporterOpts = append(metricExporterOpts, otlpmetricgrpc.WithEndpoint(endpoint))
+	}
+	if insecure {
+		metricExporterOpts = append(metricExporterOpts, otlpmetricgrpc.WithInsecure())
+	}
+	metricExporter, err := otlpmetricgrpc.New(ctx, metricExporterOpts...)
+	if err != nil {
+		handleErr(fmt.Errorf("failed to create metric exporter: %w", err))
+		return
+	}
+	meterProvider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
+		sdkmetric.WithResource(res),
+	)
+	shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
+	otel.SetMeterProvider(meterProvider)
+
+	return
 }
 
-func runHttpServer(port string) error {
-	accessKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
-	secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-	endpoint := os.Getenv("AWS_ENDPOINT")
-	region := os.Getenv("AWS_REGION")
-	cdnHostForBucket = os.Getenv("ASSET_URL_FOR_BUCKET")
-	s3Bucket = os.Getenv("AWS_BUCKET")
-
-	if cdnHostForBucket == "" {
-		return errors.New("ASSET_URL_FOR_BUCKET is empty, please specify a URL")
-	}
-
-	if s3Bucket == "" {
-		return errors.New("AWS_BUCKET is empty, please specify a s3 bucket")
-	}
-
-	ctx := Context{
-		limiter: ratelimit.New(100),
-		cache:   cache.New(time.Hour*24*30, time.Hour*24*5),
-		s3: s3.New(s3.Options{
-			Region:       region,
-			BaseEndpoint: aws.String("https://" + endpoint),
-			Credentials:  credentials.NewStaticCredentialsProvider(accessKeyId, secretAccessKey, ""),
-		}),
-		log: zerolog.New(os.Stderr).With().Timestamp().Str("version", Version).Logger(),
-	}
-
-	http.Handle("/api/v1/resolve/", Endpoint(ctx, GetFaviconEndpoint))
-
-	ctx.log.Debug().Str("cacheStatus", defaults.CacheStatus).Msg("starting server")
-
-	return http.ListenAndServe(port, nil)
+// loggingMiddleware logs the incoming HTTP request.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		slog.Info("request processed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"duration", time.Since(start),
+		)
+	})
 }
 
 func main() {
-	cacheFlag := flag.Bool("cache", defaults.CacheStatus == defaults.CacheEnabled, "enable caching")
-
+	listenAddr := flag.String("listen-addr", ":8080", "The address to listen on for HTTP requests.")
+	publicURL := flag.String("public-url", "http://localhost:8080", "The public base URL for constructing icon URLs.")
+	storageDir := flag.String("storage-dir", "icons", "The directory to store icons in.")
+	otelEndpoint := flag.String("otel-exporter-otlp-endpoint", "localhost:4317", "The OTLP exporter endpoint.")
+	otelInsecure := flag.Bool("otel-exporter-otlp-insecure", false, "Use an insecure connection to the OTLP exporter.")
 	flag.Parse()
 
-	if *cacheFlag {
-		defaults.CacheStatus = defaults.CacheEnabled
-	} else {
-		defaults.CacheStatus = defaults.CacheDisabled
+	// Set up a logger.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	// Create the icon storage directory.
+	if err := os.MkdirAll(*storageDir, 0755); err != nil {
+		slog.Error("failed to create icon storage directory", "error", err)
+		os.Exit(1)
 	}
 
-	err := runHttpServer(":3333")
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Set up OpenTelemetry.
+	otelShutdown, err := setupOtelSDK(ctx, *otelEndpoint, *otelInsecure)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Cannot start server: %s\n", err)
+		slog.Error("failed to set up OpenTelemetry", "error", err)
 		os.Exit(1)
+	}
+	// Handle shutdown gracefully.
+	defer func() {
+		if err := otelShutdown(context.Background()); err != nil {
+			slog.Error("failed to shutdown OpenTelemetry", "error", err)
+		}
+	}()
+
+	appTracer := otel.Tracer("iconsnatch")
+	mainCtx, mainSpan := appTracer.Start(ctx, "main.run")
+	defer mainSpan.End()
+
+	tracer := otel.Tracer("resolve.go")
+
+	// Set up the HTTP server.
+	mux := http.NewServeMux()
+
+	resolveHandlerWithTracer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolveHandler(w, r, tracer, *publicURL, *storageDir)
+	})
+	otelResolveHandler := otelhttp.NewHandler(resolveHandlerWithTracer, "resolve")
+	mux.Handle("/api/v1/resolve", loggingMiddleware(otelResolveHandler))
+
+	iconServer := http.FileServer(http.Dir(*storageDir))
+	showHandler := http.StripPrefix("/api/v1/show/", iconServer)
+	mux.Handle("/api/v1/show/", loggingMiddleware(showHandler))
+
+	server := &http.Server{
+		Addr:    *listenAddr,
+		Handler: mux,
+	}
+
+	// Start the server in a goroutine.
+	serverErrCh := make(chan error, 1)
+	go func() {
+		slog.Info("server starting", "addr", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- fmt.Errorf("server failed to start: %w", err)
+		}
+		close(serverErrCh)
+	}()
+
+	// Wait for a shutdown signal or server error.
+	select {
+	case <-mainCtx.Done():
+		slog.Info("shutdown signal received, starting graceful shutdown")
+	case err := <-serverErrCh:
+		if err != nil {
+			slog.Error("server failed unexpectedly", "error", err)
+			mainSpan.RecordError(err)
+			mainSpan.SetStatus(codes.Error, err.Error())
+			cancel() // Trigger shutdown for other components.
+		}
+	}
+
+	// Create a context with a timeout for the shutdown.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	// Attempt to gracefully shut down the server.
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown failed", "error", err)
+		mainSpan.RecordError(err)
+		mainSpan.SetStatus(codes.Error, err.Error())
+	} else {
+		slog.Info("server shutdown complete")
 	}
 }

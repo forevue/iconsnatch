@@ -15,10 +15,10 @@
               name = "app";
               version = "dev";
 
-              CGO_ENABLED = 0;
+              env.CGO_ENABLED = 0;
 
-              ldflags = [ "-X faviconapi/defaults.CacheStatus=enabled" ];
-                  vendorHash = "sha256-Bs1Ni2r8Fs3LVfYFRT85dwttVYZpCQBeQkbl4ta6Ug8=";
+              ldflags = [];
+                  vendorHash = "sha256-U2mWQ4dfA9QRjzFtcEuFWgTPedxIuPbEBdM8Hpa/3RM=";
                   src = ./.;
               };
 
@@ -26,5 +26,13 @@
             packages = with pkgs; [ go ];
           };
         })
-    );
+    ) // {
+      nixosModules.default = { config, lib, pkgs, ... }: {
+        imports = [ (import ./nixos/module.nix) ];
+        config = lib.mkIf config.services.iconsnatch.enable {
+          services.iconsnatch.package =
+            lib.mkDefault self.packages.${pkgs.system}.default;
+        };
+      };
+    };
 }

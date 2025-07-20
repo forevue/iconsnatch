@@ -1,0 +1,9 @@
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "16686:16686" # jaeger-query
+      - "14268:14268" # jaeger-collector
+      - "4317:4317" # otlp-grpc
+      - "4318:4318" # otlp-http
