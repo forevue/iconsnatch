@@ -30,6 +30,12 @@ in {
       description = lib.mdDoc "The directory to store icons in.";
     };
 
+    logLevel = mkOption {
+      type = types.str;
+      default = "info";
+      description = lib.mdDoc "The minimum log level to output (debug, info, warn, error).";
+    };
+
     environment = mkOption {
       type = types.attrsOf types.str;
       default = { };
@@ -64,6 +70,7 @@ in {
             "--listen-addr=${cfg.listenAddr}"
             "--public-url=${cfg.publicURL}"
             "--storage-dir=${cfg.storageDir}"
+            "--log-level=${cfg.logLevel}"
           ];
         in "${cfg.package}/bin/iconsnatch ${lib.concatStringsSep " " flags}";
         Restart = "on-failure";
