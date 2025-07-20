@@ -19,11 +19,6 @@ import (
 	"time"
 	"unsafe"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
-
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
@@ -71,30 +66,18 @@ type ResolvedIcon struct {
 	Body io.ReadCloser
 }
 
-func FindLogoURL(ctx context.Context, tracer trace.Tracer, URL *url.URL) (*ResolvedIcon, error) {
-	ctx, span := tracer.Start(ctx, "FindLogoURL")
-	defer span.End()
-	span.SetAttributes(attribute.String("input.url", URL.String()))
-
+func FindLogoURL(ctx context.Context, URL *url.URL) (*ResolvedIcon, error) {
 	baseURL := getBaseURL(URL)
 
 	// Attempt to find favicon.ico at the base URL.
-	icoCtx, icoSpan := tracer.Start(ctx, "check-favicon.ico")
 	icoURL := baseURL + "/favicon.ico"
-	icoSpan.SetAttributes(attribute.String("url", icoURL))
-	res, err := doRequest(icoCtx, tracer, "GET", icoURL, false)
+	res, err := doRequest(ctx, "GET", icoURL, false)
 	if err != nil && !errors.Is(err, errRedirectChangedHosts) {
-		icoSpan.RecordError(err)
-		icoSpan.SetStatus(codes.Error, "request for favicon.ico failed")
 		// Do not return; proceed to check HTML.
 	} else if err == nil {
 		var buf [64]byte
 		res.Body.Read(buf[:])
 		if iconType, ok := hasValidMimeType(buf); ok {
-			icoSpan.SetAttributes(attribute.String("found.url", res.Request.URL.String()))
-			icoSpan.SetStatus(codes.Ok, "found icon at favicon.ico")
-			icoSpan.End()
-			span.SetStatus(codes.Ok, "success")
 			return &ResolvedIcon{
 				URL:  res.Request.URL.String(),
 				Type: iconType,
@@ -102,50 +85,29 @@ func FindLogoURL(ctx context.Context, tracer trace.Tracer, URL *url.URL) (*Resol
 			}, nil
 		}
 	}
-	icoSpan.End()
 
 	// If favicon.ico is not found, fetch the HTML page and look for a <link> tag.
-	htmlCtx, htmlSpan := tracer.Start(ctx, "fetch-html-page")
-	res, err = doRequest(htmlCtx, tracer, "GET", URL.String(), true)
 	if err != nil {
-		htmlSpan.RecordError(err)
-		htmlSpan.SetStatus(codes.Error, "failed to fetch html page")
-		htmlSpan.End()
-		span.RecordError(err, trace.WithAttributes(attribute.String("reason", "failed to fetch html page")))
-		span.SetStatus(codes.Error, "unreachable server")
 		return nil, ErrUnreachableServer
 	}
 	defer res.Body.Close()
-	htmlSpan.End()
 
 	// Parse the HTML to find the icon link.
-	_, parseSpan := tracer.Start(ctx, "parse-html-for-icon")
-	defer parseSpan.End()
 
 	htmlTokens := html.NewTokenizer(res.Body)
 	baseHref, iconToTry := parseHTMLLink(htmlTokens)
 	if iconToTry == "" {
-		parseSpan.SetStatus(codes.Error, "icon link not found in html")
-		span.SetStatus(codes.Error, "icon not found in html")
 		return nil, ErrIconNotFound
 	}
-	parseSpan.SetAttributes(attribute.String("found.icon_href", iconToTry))
-	parseSpan.SetStatus(codes.Ok, "found icon link in html")
 
 	iconHref := buildIconURL(iconToTry, baseHref, res.Request.URL)
 	if iconHref == "" {
-		span.SetStatus(codes.Error, "could not construct a valid icon URL")
 		return nil, ErrIconNotFound
 	}
 
 	// Fetch the icon specified in the HTML.
-	fetchCtx, fetchSpan := tracer.Start(ctx, "fetch-html-linked-icon")
-	defer fetchSpan.End()
-	fetchSpan.SetAttributes(attribute.String("url", iconHref))
-	res, err = doRequest(fetchCtx, tracer, "GET", iconHref, true)
+	res, err = doRequest(ctx, "GET", iconHref, true)
 	if err != nil {
-		span.RecordError(err, trace.WithAttributes(attribute.String("reason", "failed to fetch linked icon")))
-		span.SetStatus(codes.Error, "unreachable server")
 		return nil, ErrUnreachableServer
 	}
 
@@ -153,11 +115,9 @@ func FindLogoURL(ctx context.Context, tracer trace.Tracer, URL *url.URL) (*Resol
 	_, _ = res.Body.Read(buf[:])
 	iconType, ok := hasValidMimeType(buf)
 	if !ok {
-		span.SetStatus(codes.Error, "linked resource is not a valid icon type")
 		return nil, ErrIconNotFound
 	}
 
-	span.SetStatus(codes.Ok, "success")
 	return &ResolvedIcon{
 		URL:  res.Request.URL.String(),
 		Type: iconType,
@@ -182,44 +142,19 @@ func ReaderCloser(closer io.Closer, readers ...io.Reader) io.ReadCloser {
 
 // RemoveLogoBackground decodes an image, removes a uniform background, and re-encodes it as a PNG.
 // It is instrumented with OpenTelemetry tracing.
-func RemoveLogoBackground(ctx context.Context, tracer trace.Tracer, resolvedIcon *ResolvedIcon) (io.ReadCloser, bool, error) {
-	ctx, span := tracer.Start(ctx, "RemoveLogoBackground")
-	defer span.End()
-	span.SetAttributes(
-		attribute.String("icon.url", resolvedIcon.URL),
-		attribute.String("icon.type", resolvedIcon.Type.ContentType()),
-	)
-
-	_, decodeSpan := tracer.Start(ctx, "decode-icon")
+func RemoveLogoBackground(ctx context.Context, resolvedIcon *ResolvedIcon) (io.ReadCloser, bool, error) {
 	icon, _, err := image.Decode(resolvedIcon.Body)
 	if err != nil {
-		decodeSpan.RecordError(err)
-		decodeSpan.SetStatus(codes.Error, "failed to decode image")
-		decodeSpan.End()
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "image decoding failed")
 		return nil, false, fmt.Errorf("PatchIcon(%d, %s): %w", resolvedIcon.Type, resolvedIcon.URL, err)
 	}
-	decodeSpan.End()
 
-	_, patchSpan := tracer.Start(ctx, "patch-icon-background")
 	img, filled := iconpatch.Patch(icon)
-	patchSpan.SetAttributes(attribute.Bool("icon.filled", filled))
-	patchSpan.End()
 
-	_, encodeSpan := tracer.Start(ctx, "encode-patched-icon-png")
 	buf := new(bytes.Buffer)
 	if err := png.Encode(buf, img); err != nil {
-		encodeSpan.RecordError(err)
-		encodeSpan.SetStatus(codes.Error, "failed to encode image")
-		encodeSpan.End()
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "image encoding failed")
 		return nil, false, fmt.Errorf("failed to encode patched icon: %w", err)
 	}
-	encodeSpan.End()
 
-	span.SetStatus(codes.Ok, "successfully patched and encoded icon")
 	return io.NopCloser(buf), filled, nil
 }
 
@@ -227,24 +162,14 @@ func getBaseURL(URL *url.URL) string {
 	return fmt.Sprintf("%s://%s", URL.Scheme, URL.Host)
 }
 
-func doRequest(ctx context.Context, tracer trace.Tracer, method string, URL string, allowDomainChange bool) (*http.Response, error) {
-	_, span := tracer.Start(ctx, "doRequest")
-	defer span.End()
-	span.SetAttributes(
-		attribute.String("http.method", method),
-		attribute.String("http.url", URL),
-		attribute.Bool("http.allow_domain_change", allowDomainChange),
-	)
-
+func doRequest(ctx context.Context, method string, URL string, allowDomainChange bool) (*http.Response, error) {
 	parsedURL, err := url.ParseRequestURI(URL)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "url parse failed")
 		return nil, err
 	}
 
 	client := &http.Client{
-		Transport: otelhttp.NewTransport(http.DefaultTransport),
+		Transport: http.DefaultTransport,
 		Timeout:   5 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if allowDomainChange {
@@ -261,8 +186,6 @@ func doRequest(ctx context.Context, tracer trace.Tracer, method string, URL stri
 
 	req, err := http.NewRequestWithContext(ctx, method, URL, nil)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "request creation failed")
 		return nil, err
 	}
 
@@ -272,19 +195,7 @@ func doRequest(ctx context.Context, tracer trace.Tracer, method string, URL stri
 	req.Header.Add("Referer", baseURL)
 	req.Header.Add("Origin", baseURL)
 
-	recordOutgoingRequest(ctx, attribute.String("http.url", URL))
 	res, err := client.Do(req)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "http request failed")
-	} else {
-		span.SetAttributes(attribute.Int("http.status_code", res.StatusCode))
-		if res.StatusCode >= 400 {
-			span.SetStatus(codes.Error, "http status error")
-		} else {
-			span.SetStatus(codes.Ok, "success")
-		}
-	}
 	return res, err
 }
 
