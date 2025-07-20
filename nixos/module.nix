@@ -74,7 +74,7 @@ in {
             [ "--otel-exporter-otlp-endpoint=${cfg.otelEndpoint}" ]
             ++ lib.optionals (cfg.otelEndpoint != null && cfg.otelInsecure)
             [ "--otel-exporter-otlp-insecure" ];
-        in "${cfg.package}/bin/app ${lib.concatStringsSep " " flags}";
+        in "${cfg.package}/bin/iconsnatch ${lib.concatStringsSep " " flags}";
         Restart = "on-failure";
         RestartSec = "5s";
 

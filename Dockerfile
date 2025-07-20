@@ -15,4 +15,4 @@ COPY --from=builder /tmp/build/result /app
 
 COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-CMD ["/app/bin/faviconapi"]
+CMD ["/app/bin/iconsnatch"]

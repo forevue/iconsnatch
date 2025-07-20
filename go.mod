@@ -1,4 +1,4 @@
-module faviconapi
+module iconsnatch
 
 go 1.23.0
 
