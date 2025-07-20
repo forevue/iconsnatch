@@ -2,10 +2,8 @@
 
 with lib;
 
-let
-  cfg = config.services.iconsnatch;
-in
-{
+let cfg = config.services.iconsnatch;
+in {
   options.services.iconsnatch = {
     enable = mkEnableOption (lib.mdDoc "iconsnatch server");
 
@@ -35,13 +33,15 @@ in
     otelEndpoint = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = lib.mdDoc "The OTLP exporter endpoint. For example, 'localhost:4317'.";
+      description =
+        lib.mdDoc "The OTLP exporter endpoint. For example, 'localhost:4317'.";
     };
 
     otelInsecure = mkOption {
       type = types.bool;
       default = false;
-      description = lib.mdDoc "Use an insecure connection to the OTLP exporter.";
+      description =
+        lib.mdDoc "Use an insecure connection to the OTLP exporter.";
     };
   };
 
@@ -52,9 +52,7 @@ in
       description = "iconsnatch service user";
     };
 
-    users.groups.iconsnatch = {
-      isSystemGroup = true;
-    };
+    users.groups.iconsnatch = { };
 
     systemd.services.iconsnatch = {
       description = "iconsnatch - An icon fetching and caching service";
@@ -67,19 +65,16 @@ in
         User = "iconsnatch";
         Group = "iconsnatch";
         StateDirectory = "iconsnatch";
-        ExecStart =
-          let
-            flags = [
-              "--listen-addr=${cfg.listenAddr}"
-              "--public-url=${cfg.publicURL}"
-              "--storage-dir=${cfg.storageDir}"
-            ] ++ lib.optionals (cfg.otelEndpoint != null) [
-              "--otel-exporter-otlp-endpoint=${cfg.otelEndpoint}"
-            ] ++ lib.optionals (cfg.otelEndpoint != null && cfg.otelInsecure) [
-              "--otel-exporter-otlp-insecure"
-            ];
-          in
-          "${cfg.package}/bin/app ${lib.concatStringsSep " " flags}";
+        ExecStart = let
+          flags = [
+            "--listen-addr=${cfg.listenAddr}"
+            "--public-url=${cfg.publicURL}"
+            "--storage-dir=${cfg.storageDir}"
+          ] ++ lib.optionals (cfg.otelEndpoint != null)
+            [ "--otel-exporter-otlp-endpoint=${cfg.otelEndpoint}" ]
+            ++ lib.optionals (cfg.otelEndpoint != null && cfg.otelInsecure)
+            [ "--otel-exporter-otlp-insecure" ];
+        in "${cfg.package}/bin/app ${lib.concatStringsSep " " flags}";
         Restart = "on-failure";
         RestartSec = "5s";
 
