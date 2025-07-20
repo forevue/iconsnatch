@@ -11,7 +11,12 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"embed" // Import the embed package
 )
+
+//go:embed static
+var staticFS embed.FS // Embed the static directory
 
 // loggingMiddleware logs the incoming HTTP request.
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -74,8 +79,8 @@ func main() {
 	showHandler := http.StripPrefix("/api/v1/show/", iconServer)
 	mux.Handle("/api/v1/show/", showHandler)
 
-	fs := http.FileServer(http.Dir("./static"))
-	mux.Handle("/", fs)
+	// Serve the embedded static files
+	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 
 	server := &http.Server{
 		Addr:    *listenAddr,
