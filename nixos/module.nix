@@ -29,6 +29,12 @@ in {
       default = "/var/lib/iconsnatch/icons";
       description = lib.mdDoc "The directory to store icons in.";
     };
+
+    environment = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = lib.mdDoc "Environment variables to pass to the iconsnatch service.";
+    };
   };
 
   config = mkIf cfg.enable {
@@ -45,6 +51,8 @@ in {
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
+
+      environment = cfg.environment;
 
       serviceConfig = {
         Type = "simple";

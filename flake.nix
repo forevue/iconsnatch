@@ -18,7 +18,7 @@
               env.CGO_ENABLED = 0;
 
               ldflags = [];
-                  vendorHash = "sha256-U2mWQ4dfA9QRjzFtcEuFWgTPedxIuPbEBdM8Hpa/3RM=";
+                  vendorHash = "sha256-ad+zwySR/xCC3OyurtjHSg8o8p6/g05PKzLcL8ZxSkU=";
                   src = ./.;
               };
 
