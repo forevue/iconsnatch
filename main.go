@@ -2,17 +2,17 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"embed" // Import the embed package
 )
 
 //go:embed static
@@ -79,8 +79,13 @@ func main() {
 	showHandler := http.StripPrefix("/api/v1/show/", iconServer)
 	mux.Handle("/api/v1/show/", showHandler)
 
-	// Serve the embedded static files
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	// Serve the embedded static files, stripping the "static" prefix.
+	subFS, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		slog.Error("failed to create sub-filesystem for static assets", "error", err)
+		os.Exit(1)
+	}
+	mux.Handle("/", http.FileServer(http.FS(subFS)))
 
 	server := &http.Server{
 		Addr:    *listenAddr,
